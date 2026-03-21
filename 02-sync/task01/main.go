@@ -33,8 +33,8 @@ import (
 )
 
 type entry[V any] struct {
-	value   V
-	expiry  time.Time
+	value  V
+	expiry time.Time
 }
 
 type TTLCache[K comparable, V any] struct {
@@ -56,14 +56,27 @@ func (c *TTLCache[K, V]) Set(key K, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// TODO: сохрани entry с expiry = time.Now().Add(c.ttl)
+	c.items[key] = entry[V]{
+		value:  value,
+		expiry: time.Now().Add(c.ttl),
+	}
+
 }
 
 // TODO: реализуй Get — возвращает значение если оно есть и не устарело
 func (c *TTLCache[K, V]) Get(key K) (V, bool) {
-	c.mu.Lock() // TODO: поменяй на RLock, но нужен апгрейд до Lock если запись устарела
-	defer c.mu.Unlock()
+	c.mu.RLock() // TODO: поменяй на RLock, но нужен апгрейд до Lock если запись устарела
+	defer c.mu.RUnlock()
+	e := c.items[key]
 	// TODO: проверь entry.expiry.After(time.Now())
 	// Если устарело — удали из map и верни zero, false
+
+	if e.expiry.After(time.Now()) {
+		return e.value, true
+	}
+
+	delete(c.items, key)
+
 	var zero V
 	return zero, false
 }
@@ -72,15 +85,25 @@ func (c *TTLCache[K, V]) Get(key K) (V, bool) {
 func (c *TTLCache[K, V]) Delete(key K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// TODO: delete(c.items, key)
+	delete(c.items, key)
 }
 
 // TODO: реализуй Len — количество ЖИВЫХ записей
 func (c *TTLCache[K, V]) Len() int {
 	c.mu.RLock()
+	counter := 0
 	defer c.mu.RUnlock()
+
+	for _, entry := range c.items {
+
+		if entry.expiry.After(time.Now()) {
+			counter++
+		}
+
+	}
+
 	// TODO: считай только не устаревшие записи
-	return 0
+	return counter
 }
 
 // TODO: реализуй Cleanup — удаляет все устаревшие записи

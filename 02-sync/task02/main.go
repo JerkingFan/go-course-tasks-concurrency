@@ -20,7 +20,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -28,7 +27,12 @@ import (
 // === Версия A: НЕПРАВИЛЬНАЯ — гонка ===
 var globalDB *MockDB
 
+// Ну типа есть две горутины, которые видят, что выполняется условие и такие "Михалыч, тут нил, пошли работать" и вот они пойдут работать. Возможно такая ситуация, что эта переменная
+// отвечает типа за вызов ядерных боеголовок по Вашингтону и типа если стоит нил и какое-то внешнее условие, то надо установить значение чтобы запустить ракеты
+// и вот две горутины пошли включать ракеты, велик шанс, что один включит а другой выключит
 func GetDB_Broken() *MockDB {
+	muDB.Lock()
+	defer muDB.Unlock()
 	if globalDB == nil { // ← гонка: несколько горутин могут пройти это условие
 		globalDB = NewMockDB()
 	}
@@ -59,7 +63,14 @@ var (
 // TODO: реализуй GetDB_Once
 func GetDB_Once() *MockDB {
 	// TODO: используй onceDB.Do(func() { singleDB = NewMockDB() })
-	return nil
+
+	onceDB.Do(func() {
+
+		singleDB = NewMockDB()
+
+	})
+
+	return singleDB
 }
 
 // === Задача 3: Once с обработкой ошибки ===
@@ -83,10 +94,20 @@ func (o *OnceWithError) Do(fn func() (any, error)) (any, error) {
 		return o.val, o.err
 	}
 
+	val, err := fn()
+
+	if err == nil {
+		o.done = true
+	}
+
+	o.val = val
+	o.err = err
+
 	// TODO: вызови fn()
 	// TODO: если err == nil — установи done = true
 	// TODO: сохрани val и err
-	return nil, errors.New("TODO: реализуй")
+
+	return val, err
 }
 
 // === Вспомогательный мок ===

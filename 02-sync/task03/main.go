@@ -50,7 +50,8 @@ func (s *Semaphore) Acquire(n int) {
 
 // AcquireContext захват с контекстом — можно отменить.
 // TODO: реализуй — если ctx отменён до получения всех n единиц,
-//       верни уже захваченные обратно и вернуть ctx.Err()
+//
+//	верни уже захваченные обратно и вернуть ctx.Err()
 func (s *Semaphore) AcquireContext(ctx context.Context, n int) error {
 	acquired := 0
 	for range n {
@@ -69,16 +70,15 @@ func (s *Semaphore) AcquireContext(ctx context.Context, n int) error {
 // TryAcquire non-blocking захват. Возвращает false если доступно < n.
 // TODO: реализуй
 func (s *Semaphore) TryAcquire(n int) bool {
-	// Подсказка: проверь len(s.ch), потом попробуй захватить
-	if len(s.ch) < n {
-		return false
-	}
-	// TODO: захвати через default в select
-	for range n {
+	acquired := 0
+	for i := 0; i < n; i++ {
 		select {
 		case <-s.ch:
+			acquired++
 		default:
-			s.Release(n - 1) // вернём уже взятые
+			if acquired > 0 {
+				s.Release(acquired)
+			}
 			return false
 		}
 	}

@@ -79,7 +79,7 @@ func square(done <-chan struct{}, in <-chan int) <-chan int {
 	go func() {
 		defer close(out)
 		for n := range in {
-			// TODO: проверяй done перед отправкой
+			withDone(done, in)
 			select {
 			case out <- n * n:
 			case <-done:

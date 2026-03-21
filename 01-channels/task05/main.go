@@ -61,8 +61,22 @@ func mergeN(channels ...<-chan int) <-chan int {
 
 	// TODO: на каждый канал — горутина
 	// TODO: WaitGroup.Wait() в отдельной горутине, потом close(out)
-	_ = wg
-	_ = channels
+
+	wg.Add(len(channels))
+
+	for _, ch := range channels {
+		go func(c <-chan int) {
+			defer wg.Done()
+			for v := range c {
+				out <- v
+			}
+		}(ch)
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
 
 	return out
 }
@@ -112,4 +126,10 @@ func main() {
 	}
 	sort.Ints(result2)
 	fmt.Println("mergeN:", result2) // [1 2 3 ... 20]
+
+	for v := range mergeOrdered(channels...) {
+		result2 = append(result2, v)
+	}
+	sort.Ints(result2)
+	fmt.Println("mergeOrdered:", result2) // [1 2 3 ... 20]
 }

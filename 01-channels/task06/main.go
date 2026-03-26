@@ -40,19 +40,23 @@ import (
 const sendTimeout = 100 * time.Millisecond
 
 type Generator struct {
-	ch      chan int
-	closed  chan struct{}
-	once    sync.Once
-	sent    atomic.Int64
-	dropped atomic.Int64
+	out       chan int
+	exit      chan struct{}
+	wg        sync.WaitGroup // не ебу нахуя добавил, казалось, что это крутая идея, но типа не
+	flagSend  atomic.Int64
+	flagClose atomic.Int64
+	once      sync.Once
 }
 
 // TODO: реализуй NewGenerator
 func NewGenerator(bufSize int) *Generator {
+
 	return &Generator{
-		ch:     make(chan int, bufSize),
-		closed: make(chan struct{}),
+
+		out:  make(chan int),
+		exit: make(chan struct{}),
 	}
+
 }
 
 // TODO: реализуй Send
@@ -60,41 +64,48 @@ func NewGenerator(bufSize int) *Generator {
 // Если буфер полон — ждёт до sendTimeout, потом возвращает false.
 // Если Generator закрыт — сразу возвращает false.
 func (g *Generator) Send(v int) bool {
+
+	//Оказывается гошка может в select выбрать блять любой case, типа если верны два кейса, гошка выберет любой, а не последовательно по цепочке, круто, спасибо папаша, когда патчноут?
 	select {
-	case <-g.closed:
+	case <-g.exit:
 		return false
 	default:
 	}
 
 	select {
-	case g.ch <- v:
-		g.sent.Add(1)
+
+	case g.out <- v:
+		g.flagSend.Add(1)
 		return true
 	case <-time.After(sendTimeout):
-		g.dropped.Add(1)
+		g.flagClose.Add(1)
 		return false
-	case <-g.closed:
-		g.dropped.Add(1)
+	case <-g.exit:
+		g.flagClose.Add(1)
 		return false
 	}
+
 }
 
 // Chan возвращает канал для чтения данных
 func (g *Generator) Chan() <-chan int {
-	return g.ch
+	return g.out
 }
 
 // TODO: реализуй Close — закрой closed канал через sync.Once, закрой ch
 func (g *Generator) Close() {
+
 	g.once.Do(func() {
-		close(g.closed)
-		close(g.ch)
+
+		close(g.out)
+		close(g.exit)
+
 	})
 }
 
 // Stats возвращает статистику
-func (g *Generator) Stats() (sent, dropped int64) {
-	return g.sent.Load(), g.dropped.Load()
+func (g *Generator) Stats() (flagSend, flagClose int64) {
+	return g.flagSend.Load(), g.flagClose.Load()
 }
 
 func main() {

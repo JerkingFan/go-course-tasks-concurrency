@@ -35,122 +35,143 @@ import (
 )
 
 type BlockingQueue[T any] struct {
+	arr      []T
+	capacity int
 	mu       sync.Mutex
-	notFull  *sync.Cond
 	notEmpty *sync.Cond
-	items    []T
-	cap      int
-	closed   bool
+	notFull  *sync.Cond
+	close    bool
 }
 
 // TODO: реализуй NewBlockingQueue
 func NewBlockingQueue[T any](capacity int) *BlockingQueue[T] {
-	q := &BlockingQueue[T]{
-		items: make([]T, 0, capacity),
-		cap:   capacity,
+
+	if capacity < 0 {
+		panic("АЙ СЫН ША ОТРИЦАТЕЛЬНАЯ ЁМКОСТЬ")
 	}
-	q.notFull = sync.NewCond(&q.mu)
-	q.notEmpty = sync.NewCond(&q.mu)
-	return q
+
+	bq := &BlockingQueue[T]{
+		arr:      make([]T, 0, capacity),
+		capacity: capacity,
+		close:    false,
+	}
+	bq.notEmpty = sync.NewCond(&bq.mu)
+	bq.notFull = sync.NewCond(&bq.mu)
+
+	return bq
+
 }
 
 // TODO: реализуй Put — блокируется пока len(items) == cap
-func (q *BlockingQueue[T]) Put(item T) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for len(q.items) == q.cap && !q.closed {
-		q.notFull.Wait()
-	}
-	if q.closed {
+func (bq *BlockingQueue[T]) Put(item T) {
+
+	bq.mu.Lock()
+	if bq.close {
+		bq.mu.Unlock()
 		return
 	}
-	q.items = append(q.items, item)
-	q.notEmpty.Signal()
+	for len(bq.arr) == bq.capacity {
+		bq.notFull.Wait()
+	}
+	bq.arr = append(bq.arr, item)
+	bq.notEmpty.Signal()
+	bq.mu.Unlock()
+
 }
 
 // TODO: реализуй Take — блокируется пока len(items) == 0
-func (q *BlockingQueue[T]) Take() (zero T) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for len(q.items) == 0 && !q.closed {
-		q.notEmpty.Wait()
+func (bq *BlockingQueue[T]) Take() (zero T) {
+
+	bq.mu.Lock()
+	defer bq.mu.Unlock()
+	for len(bq.arr) == 0 {
+		bq.notEmpty.Wait()
 	}
-	if len(q.items) == 0 {
-		return zero
-	}
-	item := q.items[0]
-	q.items = q.items[1:]
-	q.notFull.Signal()
+
+	item := bq.arr[0]
+	bq.arr = bq.arr[1:]
+
 	return item
 }
 
 // TODO: реализуй PutTimeout
 // Подсказка: запусти горутину с таймером которая вызывает notFull.Broadcast()
-func (q *BlockingQueue[T]) PutTimeout(item T, d time.Duration) bool {
-	timer := time.AfterFunc(d, func() {
-		q.mu.Lock()
-		q.notFull.Broadcast()
-		q.mu.Unlock()
-	})
-	defer timer.Stop()
+func (bq *BlockingQueue[T]) PutTimeout(item T, d time.Duration) bool {
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	deadline := time.Now().Add(d)
-	for len(q.items) == q.cap && !q.closed {
-		if time.Now().After(deadline) {
-			return false
-		}
-		q.notFull.Wait()
-	}
-	if q.closed {
+	bq.mu.Lock()
+	defer bq.mu.Unlock()
+	if bq.close == true {
 		return false
 	}
-	q.items = append(q.items, item)
-	q.notEmpty.Signal()
+	timeout := make(chan struct{})
+
+	go func() {
+		time.Sleep(d)
+		bq.notFull.Broadcast()
+		close(timeout)
+	}()
+
+	for len(bq.arr) == bq.capacity {
+
+		bq.notFull.Wait()
+		select {
+		case <-timeout:
+			return false
+		default:
+
+		}
+
+	}
+	bq.arr = append(bq.arr, item)
+	bq.notEmpty.Signal()
 	return true
 }
 
 // TODO: реализуй TakeTimeout аналогично
-func (q *BlockingQueue[T]) TakeTimeout(d time.Duration) (zero T, ok bool) {
-	timer := time.AfterFunc(d, func() {
-		q.mu.Lock()
-		q.notEmpty.Broadcast()
-		q.mu.Unlock()
-	})
-	defer timer.Stop()
+func (bq *BlockingQueue[T]) TakeTimeout(d time.Duration) (zero T, ok bool) {
+	bq.mu.Lock()
+	defer bq.mu.Unlock()
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	deadline := time.Now().Add(d)
-	for len(q.items) == 0 && !q.closed {
-		if time.Now().After(deadline) {
-			return zero, false
-		}
-		q.notEmpty.Wait()
-	}
-	if len(q.items) == 0 {
+	if bq.close {
 		return zero, false
 	}
-	item := q.items[0]
-	q.items = q.items[1:]
-	q.notFull.Signal()
+
+	timeout := make(chan struct{})
+
+	go func() {
+		time.Sleep(d)
+		bq.notEmpty.Broadcast()
+		close(timeout)
+	}()
+
+	for len(bq.arr) == 0 {
+		bq.notEmpty.Wait()
+		select {
+		case <-timeout:
+			return zero, false
+		default:
+		}
+	}
+
+	item := bq.arr[0]
+	bq.arr = bq.arr[1:]
+
+	bq.notFull.Signal()
+
 	return item, true
 }
 
 func (q *BlockingQueue[T]) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.items)
+	return len(q.arr)
 }
 
 // Close закрывает очередь и пробуждает все заблокированные горутины
 func (q *BlockingQueue[T]) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.closed = true
+	q.close = true
 	q.notFull.Broadcast()
 	q.notEmpty.Broadcast()
 }
@@ -170,7 +191,7 @@ func main() {
 
 	// Потребитель (медленный)
 	for {
-		v, ok := q.TakeTimeout(500 * time.Millisecond)
+		v, ok := q.TakeTimeout(5000 * time.Millisecond)
 		if !ok {
 			fmt.Println("Очередь закрыта или таймаут")
 			break

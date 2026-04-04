@@ -42,56 +42,68 @@ type WorkerPool struct {
 
 // TODO: реализуй NewWorkerPool
 func NewWorkerPool(workers int) *WorkerPool {
-	p := &WorkerPool{
-		jobs: make(chan func(), 100),
+
+	slaves := &WorkerPool{
+		jobs: make(chan func()),
 	}
-	p.wg.Add(workers)
+
 	for range workers {
+
+		slaves.wg.Add(1)
 		go func() {
-			defer p.wg.Done()
-			p.running.Add(1)
-			defer p.running.Add(-1)
-			for job := range p.jobs {
-				job()
+			defer slaves.wg.Done()
+			for task := range slaves.jobs {
+				task()
 			}
+
 		}()
+
 	}
-	return p
+
+	slaves.running.Store(1)
+
+	return slaves
 }
 
 // TODO: реализуй Submit
 func (p *WorkerPool) Submit(task func()) bool {
+
 	select {
 	case p.jobs <- task:
 		return true
 	default:
-		// очередь переполнена
 		return false
 	}
+
 }
 
 // Stop ждёт завершения всех задач
-func (p *WorkerPool) Stop() {
-	p.once.Do(func() {
-		close(p.jobs)
+func (slaves *WorkerPool) Stop() {
+
+	slaves.once.Do(func() {
+		close(slaves.jobs)
 	})
-	p.wg.Wait()
+	slaves.wg.Wait()
+
 }
 
 // StopNow немедленно закрывает канал, дропает незапущенные задачи
-func (p *WorkerPool) StopNow() {
-	p.once.Do(func() {
-		// Дренируем незапущенные задачи
+func (slaves *WorkerPool) StopNow() {
+
+	slaves.once.Do(func() {
 		for {
+
 			select {
-			case <-p.jobs:
+			case <-slaves.jobs:
 			default:
-				close(p.jobs)
+				close(slaves.jobs)
 				return
 			}
+
 		}
 	})
-	p.wg.Wait()
+	slaves.wg.Wait()
+
 }
 
 func (p *WorkerPool) Running() int {

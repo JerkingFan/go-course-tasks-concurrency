@@ -27,50 +27,50 @@ package main
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type Barrier struct {
-	n       int
-	count   atomic.Int32
-	mu      sync.Mutex
-	cond    *sync.Cond
-	phase   atomic.Int64 // для определения "поколения" барьера
+	mu     sync.Mutex
+	condon sync.Cond
+	size   int
+	count  int
+	phase  int
 }
 
 // TODO: реализуй NewBarrier
 func NewBarrier(n int) *Barrier {
-	b := &Barrier{n: n}
-	b.cond = sync.NewCond(&b.mu)
+
+	b := &Barrier{size: n}
+
+	b.condon = *sync.NewCond(&b.mu)
 	return b
 }
 
 // TODO: реализуй Wait
 // Алгоритм:
-//   1. Инкрементируй счётчик пришедших
-//   2. Если это последняя горутина (count == n):
-//      - сбрось count = 0
-//      - поменяй phase
-//      - вызови cond.Broadcast()
-//   3. Иначе — жди (cond.Wait) пока phase не изменится
+//  1. Инкрементируй счётчик пришедших
+//  2. Если это последняя горутина (count == n):
+//     - сбрось count = 0
+//     - поменяй phase
+//     - вызови cond.Broadcast()
+//  3. Иначе — жди (cond.Wait) пока phase не изменится
 func (b *Barrier) Wait() {
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.count++
+	curPhase := b.phase
 
-	phase := b.phase.Load()
-	b.count.Add(1)
-
-	if int(b.count.Load()) == b.n {
-		b.count.Store(0)
-		b.phase.Add(1)
-		b.cond.Broadcast()
+	if b.count == b.size {
+		b.count = 0
+		b.phase++
+		b.condon.Broadcast()
 	} else {
-		// TODO: жди пока phase не изменится
-		for b.phase.Load() == phase {
-			b.cond.Wait()
+		for b.phase == curPhase {
+			b.condon.Wait()
 		}
 	}
+	b.mu.Unlock()
 }
 
 func main() {

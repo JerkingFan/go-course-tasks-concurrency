@@ -27,6 +27,11 @@ import (
 	"time"
 )
 
+type ResultChan struct {
+	val string
+	err string
+}
+
 var ErrTimeout = errors.New("таймаут истёк")
 var ErrAllFailed = errors.New("все запросы завершились ошибкой")
 
@@ -52,20 +57,69 @@ func mockFetch(ctx context.Context, url string) (Result, error) {
 
 // TODO: реализуй fastest
 // Алгоритм:
-//   1. Для каждого url запусти горутину с mockFetch
-//   2. Через select жди первый успешный результат
-//   3. При получении — отмени контекст (остальные сами остановятся)
-//   4. Если все вернули ошибку — вернуть ErrAllFailed
-//   5. Если ctx отменён раньше — вернуть ErrTimeout
+//  1. Для каждого url запусти горутину с mockFetch
+//  2. Через select жди первый успешный результат
+//  3. При получении — отмени контекст (остальные сами остановятся)
+//  4. Если все вернули ошибку — вернуть ErrAllFailed
+//  5. Если ctx отменён раньше — вернуть ErrTimeout
 func fastest(ctx context.Context, urls []string) (Result, error) {
-	// TODO: реализуй
-	return Result{}, errors.New("TODO: реализуй")
+
+	resCh := make(chan Result)
+	errCh := make(chan error)
+
+	for _, url := range urls {
+
+		go func(url string) {
+
+			res, err := mockFetch(ctx, url)
+
+			if err != nil {
+
+				errCh <- err
+				return
+			}
+
+			resCh <- res
+
+		}(url)
+
+	}
+
+	select {
+	case res := <-resCh:
+		return res, nil
+	case err := <-errCh:
+		return Result{}, err
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
+	}
+
 }
 
 // TODO: реализуй withTimeout
 func withTimeout(d time.Duration, fn func() (string, error)) (string, error) {
-	// TODO: запусти fn в горутине, используй select с time.After
-	return "", errors.New("TODO: реализуй")
+
+	resultChan := make(chan struct {
+		val string
+		err error
+	}, 1)
+
+	go func() {
+
+		val, err := fn()
+		resultChan <- struct {
+			val string
+			err error
+		}{val, err}
+		time.After(d)
+
+	}()
+	select {
+	case <-time.After(d):
+		return "", ErrTimeout
+	case res := <-resultChan:
+		return res.val, res.err
+	}
 }
 
 func main() {

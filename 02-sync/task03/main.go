@@ -22,7 +22,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -32,36 +34,51 @@ type Semaphore struct {
 }
 
 // NewSemaphore создаёт семафор с ёмкостью n.
-func NewSemaphore(n int) *Semaphore {
-	ch := make(chan struct{}, n)
-	for range n {
-		ch <- struct{}{}
+func NewSemaphore(n int) (*Semaphore, error) {
+
+	//Не знаю насколько критична данная проверка, но просто типа мало ли + я типа декларацию функции изменил, а следовательно по пизде пошли некоторые моменты, поэтому типа хз, насколько правильно
+	if n < 0 {
+		return nil, errors.New("Отрицательная емкость? Хм, знаешь, что еще отрицательное? Состав гастомельского десанта")
 	}
-	return &Semaphore{ch: ch}
+
+	chanel := make(chan struct{}, n)
+
+	for range n {
+		chanel <- struct{}{}
+	}
+	return &Semaphore{ch: chanel}, nil
 }
 
 // Acquire блокирующий захват n единиц.
 // TODO: реализуй через цикл с чтением из ch
 func (s *Semaphore) Acquire(n int) {
+
 	for range n {
 		<-s.ch
 	}
+
 }
 
 // AcquireContext захват с контекстом — можно отменить.
 // TODO: реализуй — если ctx отменён до получения всех n единиц,
-//       верни уже захваченные обратно и вернуть ctx.Err()
+//
+//	верни уже захваченные обратно и вернуть ctx.Err()
 func (s *Semaphore) AcquireContext(ctx context.Context, n int) error {
-	acquired := 0
+
+	collect := 0
+
 	for range n {
+
 		select {
+
 		case <-s.ch:
-			acquired++
+			collect++
 		case <-ctx.Done():
-			// Возвращаем уже захваченное
-			s.Release(acquired)
+			s.Release(collect)
 			return ctx.Err()
+
 		}
+
 	}
 	return nil
 }
@@ -69,24 +86,30 @@ func (s *Semaphore) AcquireContext(ctx context.Context, n int) error {
 // TryAcquire non-blocking захват. Возвращает false если доступно < n.
 // TODO: реализуй
 func (s *Semaphore) TryAcquire(n int) bool {
-	// Подсказка: проверь len(s.ch), потом попробуй захватить
-	if len(s.ch) < n {
-		return false
-	}
-	// TODO: захвати через default в select
+	collect := 0
+
 	for range n {
+
 		select {
+
 		case <-s.ch:
+			collect++
 		default:
-			s.Release(n - 1) // вернём уже взятые
-			return false
+			if collect < n {
+				return false
+			} else {
+				s.Release(collect)
+				return true
+			}
+
 		}
 	}
-	return true
+	return false
 }
 
 // Release возвращает n единиц.
 func (s *Semaphore) Release(n int) {
+
 	for range n {
 		s.ch <- struct{}{}
 	}
@@ -98,10 +121,12 @@ func (s *Semaphore) Available() int {
 }
 
 func main() {
-	sem := NewSemaphore(3)
+	sem, err := NewSemaphore(3)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var wg sync.WaitGroup
 
-	// 5 задач, каждая занимает 1 единицу, не более 3 одновременно
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		n := i

@@ -43,164 +43,245 @@ const (
 
 type TaskID int64
 
+type TaskStatus int
+const (
+    StatusPending TaskStatus = iota
+    StatusReady
+    StatusRunning
+    StatusCompleted
+    StatusFailed
+    StatusCanceled
+    StatusTimedOut
+)
+
+//Хуйня для создания таски и передачи в планировщик
 type Task struct {
-	ID       TaskID
-	Priority Priority
-	Deadline time.Time // нулевое = без дедлайна
-	DependsOn []TaskID  // ID задач от которых зависим
-	Fn       func(ctx context.Context) error
+    Fn           func(ctx context.Context) error
+    Priority     int                     // чем меньше число, тем выше приоритет
+    Dependencies []TaskID               
+    Deadline     time.Time              
+   
 }
 
+//Хуйня для отслеживания положнякак с задачей
 type taskState struct {
-	task     Task
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
-	err      error
-	queuedAt time.Time
+    ID             TaskID
+    Priority       int
+    Fn             func(ctx context.Context) error
+    Ctx            context.Context
+    Cancel         context.CancelFunc
+    Dependencies   []TaskID
+    RemainingDeps  int                     
+    Dependents     []TaskID               
+    Status         TaskStatus              // enum: pending, ready, running, completed, failed, canceled, timedout
+    Err            error
+    CreatedAt      time.Time
+    StartedAt      time.Time
+    FinishedAt     time.Time
+    WaitCh         chan struct{}           // канал, на котором ждут в Wait()
+    Deadline       time.Time              
 }
 
 type Stats struct {
-	Completed int64
-	Failed    int64
-	Cancelled int64
-	Pending   int64
+    Submitted  atomic.Int64
+    Completed  atomic.Int64
+    Failed     atomic.Int64
+    Canceled   atomic.Int64
+    TimedOut   atomic.Int64
+    TotalWait  atomic.Int64 
+    TotalExec  atomic.Int64 
 }
 
 type Scheduler struct {
-	mu      sync.Mutex
-	tasks   map[TaskID]*taskState
-	queue   []*taskState // упрощённо — обычный срез, сортируем по приоритету
-	workers int
-	jobs    chan *taskState
-	wg      sync.WaitGroup
-	stats   Stats
-	nextID  atomic.Int64
-	done    chan struct{}
+    workers   int
+    mu        sync.Mutex
+    cond      *sync.Cond               // условная переменная для пробуждения воркеров
+    ready     [PriorityLevels][]*taskState // очередь готовых задач по приоритетам (High, Medium, Low)
+    tasks     map[TaskID]*taskState
+    deps      map[TaskID][]TaskID      //кто зависит от задачи
+    shutdown  bool
+    wg        sync.WaitGroup           // для ожидания завершения воркеров
+    nextID    atomic.Uint64            // генератор ID
+    stats     Stats
 }
 
 // TODO: реализуй NewScheduler
 func NewScheduler(workers int) *Scheduler {
-	s := &Scheduler{
-		tasks:   make(map[TaskID]*taskState),
-		workers: workers,
-		jobs:    make(chan *taskState, 100),
-		done:    make(chan struct{}),
+
+	if workers <= 0{
+		panic("Отрицательные рабочие негры")
 	}
 
-	s.wg.Add(workers)
-	for range workers {
-		go s.worker()
-	}
+	s := *Scheduler{}
+	s.cond = sync.NewCond(&s.mu)
+	s.nextId := 0
+	//Срез готовых задачи по приоритетам
+	s.ready = make([][]*taskState, priorityLevels)
+	//Мапа для хранения всех тасок
+	s.tasks = make(map[TaskID]*taskState)
 
+	for i := 0; i <= worker - 1; i++{
+
+		s.wg.Add(1)
+		go func() {
+
+			defer s.wg.Done()
+			s.worker()
+
+		}()
+
+	}
 	return s
 }
 
 func (s *Scheduler) worker() {
-	defer s.wg.Done()
-	for {
-		select {
-		case ts, ok := <-s.jobs:
-			if !ok {
-				return
-			}
-			err := ts.task.Fn(ts.ctx)
-			ts.err = err
-			if err != nil {
-				if ts.ctx.Err() != nil {
-					atomic.AddInt64(&s.stats.Cancelled, 1)
-				} else {
-					atomic.AddInt64(&s.stats.Failed, 1)
-				}
-			} else {
-				atomic.AddInt64(&s.stats.Completed, 1)
-			}
-			close(ts.done)
-		case <-s.done:
-			return
-		}
-	}
+    defer s.wg.Done() // при запуске в NewScheduler добавляем wg.Add(1)
+
+    for {
+        
+        s.mu.Lock()
+
+        
+        if s.shutdown {
+            s.mu.Unlock()
+            return
+        }
+
+       
+        var task *taskState
+        var prio int
+        found := false
+        for prio = 0; prio < len(s.ready); prio++ {
+            if len(s.ready[prio]) > 0 {
+                task = s.ready[prio][0]
+                s.ready[prio] = s.ready[prio][1:]
+                found = true
+                break
+            }
+        }
+
+        if !found {
+            
+            s.cond.Wait()
+            s.mu.Unlock()
+            continue
+        }
+
+        
+        s.mu.Unlock()
+
+        
+        if task.Ctx.Err() != nil {
+           
+            s.mu.Lock()
+            task.Status = StatusCanceled
+            task.FinishedAt = time.Now()
+            task.Err = task.Ctx.Err()
+           
+            s.stats.Canceled.Add(1)
+            s.stats.TotalExec.Add(time.Since(task.StartedAt).Nanoseconds())
+            
+            for _, depID := range task.Dependents {
+                if dep, ok := s.tasks[depID]; ok {
+                    if dep.Status == StatusPending || dep.Status == StatusReady {
+                        dep.Cancel()
+                        dep.Status = StatusCanceled
+                        dep.FinishedAt = time.Now()
+                        dep.Err = ErrDependencyFailed
+                        
+                        if dep.WaitCh != nil {
+                            close(dep.WaitCh)
+                            dep.WaitCh = nil
+                        }
+                        
+                        s.stats.Canceled.Add(1)
+                        s.stats.TotalExec.Add(time.Since(dep.StartedAt).Nanoseconds())
+                    }
+                }
+            }
+            s.mu.Unlock()
+            continue
+        }
+
+        
+        task.Status = StatusRunning
+        task.StartedAt = time.Now()
+        err := task.Fn(task.Ctx)
+
+        
+        s.mu.Lock()
+        task.FinishedAt = time.Now()
+        if err != nil {
+            task.Status = StatusFailed
+            task.Err = err
+            s.stats.Failed.Add(1)
+            
+            for _, depID := range task.Dependents {
+                if dep, ok := s.tasks[depID]; ok {
+                    if dep.Status == StatusPending || dep.Status == StatusReady {
+                        dep.Cancel()
+                        dep.Status = StatusCanceled
+                        dep.FinishedAt = time.Now()
+                        dep.Err = ErrDependencyFailed
+                        if dep.WaitCh != nil {
+                            close(dep.WaitCh)
+                            dep.WaitCh = nil
+                        }
+                        s.stats.Canceled.Add(1)
+                        s.stats.TotalExec.Add(time.Since(dep.StartedAt).Nanoseconds())
+                    }
+                }
+            }
+        } else {
+            task.Status = StatusCompleted
+            s.stats.Completed.Add(1)
+            
+            for _, depID := range task.Dependents {
+                if dep, ok := s.tasks[depID]; ok {
+                    dep.RemainingDeps--
+                    if dep.RemainingDeps == 0 && dep.Status == StatusPending {
+                        
+                        dep.Status = StatusReady
+                        
+                        s.ready[dep.Priority] = append(s.ready[dep.Priority], dep)
+                        s.cond.Signal()
+                    }
+                }
+            }
+        }
+        s.stats.TotalExec.Add(task.FinishedAt.Sub(task.StartedAt).Nanoseconds())
+
+        
+        if task.WaitCh != nil {
+            close(task.WaitCh)
+            task.WaitCh = nil
+        }
+        s.mu.Unlock()
+    }
 }
 
 // TODO: реализуй Schedule — добавляет задачу в очередь
 // Если у задачи есть DependsOn — ждём завершения всех зависимостей в горутине
 func (s *Scheduler) Schedule(task Task) TaskID {
-	if task.ID == 0 {
-		task.ID = TaskID(s.nextID.Add(1))
-	}
 
-	ctx := context.Background()
-	if !task.Deadline.IsZero() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, task.Deadline)
-		_ = cancel
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	ts := &taskState{
-		task:     task,
-		ctx:      ctx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
-		queuedAt: time.Now(),
-	}
-
-	s.mu.Lock()
-	s.tasks[task.ID] = ts
-	s.mu.Unlock()
-
-	// Если есть зависимости — ждём в горутине
-	if len(task.DependsOn) > 0 {
-		go func() {
-			for _, depID := range task.DependsOn {
-				s.Wait(depID)
-			}
-			s.jobs <- ts
-		}()
-	} else {
-		s.jobs <- ts
-	}
-
-	return task.ID
 }
 
 // TODO: реализуй Cancel
 func (s *Scheduler) Cancel(id TaskID) bool {
-	s.mu.Lock()
-	ts, ok := s.tasks[id]
-	s.mu.Unlock()
-	if !ok {
-		return false
-	}
-	ts.cancel()
-	return true
+
 }
 
 // Wait блокируется до завершения задачи
 func (s *Scheduler) Wait(id TaskID) error {
-	s.mu.Lock()
-	ts, ok := s.tasks[id]
-	s.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("задача %d не найдена", id)
-	}
-	<-ts.done
-	return ts.err
-}
+
 
 // Shutdown останавливает планировщик
 func (s *Scheduler) Shutdown() {
-	close(s.done)
-	close(s.jobs)
-	s.wg.Wait()
+
 }
 
 func (s *Scheduler) Stats() Stats {
-	return Stats{
-		Completed: atomic.LoadInt64(&s.stats.Completed),
-		Failed:    atomic.LoadInt64(&s.stats.Failed),
-		Cancelled: atomic.LoadInt64(&s.stats.Cancelled),
-	}
+
 }
 
 func main() {

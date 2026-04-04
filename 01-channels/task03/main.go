@@ -36,58 +36,70 @@ import (
 // withDone оборачивает канал in — при закрытии done прекращает чтение.
 // TODO: реализуй
 func withDone(done <-chan struct{}, in <-chan int) <-chan int {
+
 	out := make(chan int)
+
 	go func() {
+
 		defer close(out)
+
 		for {
 			select {
+
+			case v := <-in:
+				out <- v
 			case <-done:
 				return
-			case v, ok := <-in:
-				if !ok {
-					return
-				}
-				select {
-				case out <- v:
-				case <-done:
-					return
-				}
 			}
 		}
 	}()
+
 	return out
+
 }
 
 func generate(done <-chan struct{}, nums ...int) <-chan int {
+
 	out := make(chan int)
+
 	go func() {
+
 		defer close(out)
-		for _, n := range nums {
+
+		for _, v := range nums {
+
 			select {
-			case out <- n:
+
+			case out <- v:
 			case <-done:
 				return
+
 			}
+
 		}
+
 	}()
+
 	return out
 }
 
 // TODO: добавь параметр done в square
 func square(done <-chan struct{}, in <-chan int) <-chan int {
+
 	out := make(chan int)
+
 	go func() {
 		defer close(out)
-		for n := range in {
-			// TODO: проверяй done перед отправкой
-			select {
-			case out <- n * n:
-			case <-done:
-				return
-			}
+		for el := range withDone(done, in) {
+
+			out <- el * el
+
 		}
+
 	}()
+
 	return out
+
 }
 
 func main() {

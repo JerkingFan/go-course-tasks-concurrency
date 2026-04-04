@@ -64,53 +64,36 @@ func mockFetch(ctx context.Context, url string) (Result, error) {
 //  5. Если ctx отменён раньше — вернуть ErrTimeout
 func fastest(ctx context.Context, urls []string) (Result, error) {
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	result := make(chan Result)
-	err := make(chan error)
+	resCh := make(chan Result)
+	errCh := make(chan error)
 
 	for _, url := range urls {
 
-		go func(s string) {
-			res, errors := mockFetch(ctx, s)
+		go func(url string) {
 
-			if errors != nil {
+			res, err := mockFetch(ctx, url)
 
-				select {
-				case err <- errors:
-				case <-ctx.Done():
+			if err != nil {
 
-				}
+				errCh <- err
 				return
-
 			}
-			select {
 
-			case result <- res:
-			case <-ctx.Done():
-
-			}
+			resCh <- res
 
 		}(url)
 
 	}
 
-	for i := 0; i < len(urls); i++ {
-
-		select {
-
-		case <-ctx.Done():
-			return Result{}, ErrTimeout
-		case resulta := <-result:
-			return resulta, nil
-		case <-err:
-
-		}
-
+	select {
+	case res := <-resCh:
+		return res, nil
+	case err := <-errCh:
+		return Result{}, err
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
 	}
 
-	return Result{}, ErrAllFailed
 }
 
 // TODO: реализуй withTimeout
@@ -131,14 +114,12 @@ func withTimeout(d time.Duration, fn func() (string, error)) (string, error) {
 		time.After(d)
 
 	}()
-
 	select {
 	case <-time.After(d):
 		return "", ErrTimeout
 	case res := <-resultChan:
 		return res.val, res.err
 	}
-
 }
 
 func main() {
